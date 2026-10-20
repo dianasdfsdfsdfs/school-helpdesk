@@ -1,9 +1,13 @@
 import { Elysia, t } from "elysia";
-import { prisma } from "./db";
+import { db } from "./db";
 import { auth } from "./auth";
-import { postgres } from "bun";
 
-const publicUser = { id: true, email: true, name: true, role: true };
+const publicUserFields = ["id", "email", "name", "role"] as const;
+
+const ticketsWithRelations = db.orm.public.Ticket.include("category").include(
+  "author",
+  (author) => author.select(...publicUserFields)
+);
 
 const app = new Elysia()
   .use(auth)
@@ -12,21 +16,16 @@ const app = new Elysia()
   .post(
     "/register",
     async ({ body, status }) => {
-      const existing = await prisma.user.findUnique({
-        where: { email: body.email },
-      });
+      const existing = await db.orm.public.User.first({ email: body.email });
       if (existing) {
         return status(409, { message: "User already exists." });
       }
 
-      const user = await prisma.user.create({
-        data: {
-          email: body.email,
-          password: await Bun.password.hash(body.password),
-          name: body.name,
-          role: "USER",
-        },
-        select: publicUser,
+      const user = await db.orm.public.User.select(...publicUserFields).create({
+        email: body.email,
+        password: await Bun.password.hash(body.password),
+        name: body.name,
+        role: "USER",
       });
 
       return user;
@@ -43,15 +42,13 @@ const app = new Elysia()
   .post(
     "/login",
     async ({ body, status }) => {
-      const user = await prisma.user.findUnique({
-        where: { email: body.email },
-      });
+      const user = await db.orm.public.User.first({ email: body.email });
       if (!user || !(await Bun.password.verify(body.password, user.password))) {
         return status(401, { message: "Wrong email or password." });
       }
 
       const token = crypto.randomUUID();
-      await prisma.user.update({ where: { id: user.id }, data: { token } });
+      await db.orm.public.User.where({ id: user.id }).update({ token });
 
       return { token };
     },
@@ -66,27 +63,25 @@ const app = new Elysia()
   .post(
     "/logout",
     async ({ user }) => {
-      await prisma.user.update({ where: { id: user.id }, data: { token: null } });
+      await db.orm.public.User.where({ id: user.id }).update({ token: null });
       return { message: "Logged out." };
     },
     { isAuthenticated: true }
   )
 
-  .get("/categories", () => prisma.category.findMany(), {
+  .get("/categories", () => db.orm.public.Category.all(), {
     isAuthenticated: true,
   })
 
   .post(
     "/categories",
     async ({ body, status }) => {
-      const existing = await prisma.category.findUnique({
-        where: { name: body.name },
-      });
+      const existing = await db.orm.public.Category.first({ name: body.name });
       if (existing) {
         return status(409, { message: "Category already exists." });
       }
 
-      const category = await prisma.category.create({ data: { name: body.name } });
+      const category = await db.orm.public.Category.create({ name: body.name });
       return status(201, category);
     },
     {
@@ -98,18 +93,17 @@ const app = new Elysia()
   .delete(
     "/categories/:id",
     async ({ params, status }) => {
-      const category = await prisma.category.findUnique({
-        where: { id: params.id },
-        include: { _count: { select: { tickets: true } } },
-      });
+      const category = await db.orm.public.Category.include("tickets", (tickets) =>
+        tickets.count()
+      ).first({ id: params.id });
       if (!category) {
         return status(404, { message: "Category not found." });
       }
-      if (category._count.tickets > 0) {
+      if (category.tickets > 0) {
         return status(409, { message: "Category has tickets, delete them first." });
       }
 
-      await prisma.category.delete({ where: { id: params.id } });
+      await db.orm.public.Category.where({ id: params.id }).delete();
       return { message: "Category deleted." };
     },
     {
@@ -121,23 +115,18 @@ const app = new Elysia()
   .post(
     "/tickets",
     async ({ body, user, status }) => {
-      const category = await prisma.category.findUnique({
-        where: { id: body.categoryId },
-      });
+      const category = await db.orm.public.Category.first({ id: body.categoryId });
       if (!category) {
         return status(404, { message: "Category not found." });
       }
 
-      const ticket = await prisma.ticket.create({
-        data: {
-          title: body.title,
-          description: body.description,
-          room: body.room,
-          categoryId: body.categoryId,
-          authorId: user.id,
-          status: "NEW",
-        },
-        include: { category: true, author: { select: publicUser } },
+      const ticket = await ticketsWithRelations.create({
+        title: body.title,
+        description: body.description,
+        room: body.room,
+        categoryId: body.categoryId,
+        authorId: user.id,
+        status: "NEW",
       });
 
       return status(201, ticket);
@@ -155,28 +144,27 @@ const app = new Elysia()
 
   .get(
     "/tickets",
-    ({ user }) =>
-      prisma.ticket.findMany({
-        where: user.role === "ADMIN" ? {} : { authorId: user.id },
-        include: { category: true, author: { select: publicUser } },
-        orderBy: { createdAt: "desc" },
-      }),
+    ({ user }) => {
+      const tickets =
+        user.role === "ADMIN"
+          ? ticketsWithRelations
+          : ticketsWithRelations.where({ authorId: user.id });
+      return tickets.orderBy((ticket) => ticket.createdAt.desc()).all();
+    },
     { isAuthenticated: true }
   )
 
   .patch(
     "/tickets/:id/status",
     async ({ params, body, status }) => {
-      const ticket = await prisma.ticket.findUnique({ where: { id: params.id } });
+      const ticket = await ticketsWithRelations
+        .where({ id: params.id })
+        .update({ status: body.status });
       if (!ticket) {
         return status(404, { message: "Ticket not found." });
       }
 
-      return prisma.ticket.update({
-        where: { id: params.id },
-        data: { status: body.status },
-        include: { category: true, author: { select: publicUser } },
-      });
+      return ticket;
     },
     {
       isAdmin: true,
@@ -190,12 +178,11 @@ const app = new Elysia()
   .delete(
     "/tickets/:id",
     async ({ params, status }) => {
-      const ticket = await ({ where: { id: params.id } });
+      const ticket = await db.orm.public.Ticket.where({ id: params.id }).delete();
       if (!ticket) {
         return status(404, { message: "Ticket not found." });
       }
 
-      await prisma.ticket.delete({ where: { id: params.id } });
       return { message: "Ticket deleted." };
     },
     {
@@ -205,7 +192,6 @@ const app = new Elysia()
   )
 
   .listen(process.env.PORT ?? 3000);
-
 
 console.log(
   `🦊 Elysia is running at ${app.server?.hostname}:${app.server?.port}`

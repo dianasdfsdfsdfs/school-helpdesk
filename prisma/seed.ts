@@ -1,22 +1,18 @@
 import { faker } from "@faker-js/faker";
-import { env } from "../src/env";
-import { PrismaClient } from "../src/generated/prisma/client";
-import { PrismaPg } from "@prisma/adapter-pg";
+import type { TimestampString } from "@prisma/orm-postgres/target/codec-types";
+import { db } from "../src/db";
 
-const adapter = new PrismaPg({ connectionString: env.DATABASE_URL });
-const database = new PrismaClient({ adapter });
-
-const users = await database.user.findMany({ where: { role: "USER" } });
+const users = await db.orm.public.User.where({ role: "USER" }).all();
 if (users.length === 0) throw new Error("No USER in the database, register one first");
 
-await database.category.createMany({
-    data: [{ name: "Elektrina" }, { name: "Nábytok" }, { name: "IT technika" }],
-    skipDuplicates: true,
-});
-const categories = await database.category.findMany();
+await db.orm.public.Category.createAll(
+    [{ name: "Elektrina" }, { name: "Nábytok" }, { name: "IT technika" }],
+    { onConflict: "skip" },
+);
+const categories = await db.orm.public.Category.all();
 
-const result = await database.ticket.createMany({
-    data: Array.from({ length: 500 }, () => ({
+const count = await db.orm.public.Ticket.createAndCount(
+    Array.from({ length: 500 }, () => ({
         title: faker.helpers.arrayElement([
             "Nefunguje projektor",
             "Rozbitá stolička",
@@ -27,12 +23,16 @@ const result = await database.ticket.createMany({
         description: faker.lorem.sentence(),
         room: String(faker.number.int({ min: 100, max: 399 })),
         status: faker.helpers.arrayElement(["NEW", "IN_PROGRESS", "DONE"] as const),
-        createdAt: faker.date.recent({ days: 30 }),
+        createdAt: faker.date
+            .recent({ days: 30 })
+            .toISOString()
+            .replace("T", " ")
+            .replace("Z", "") as TimestampString<3>,
         authorId: faker.helpers.arrayElement(users).id,
         categoryId: faker.helpers.arrayElement(categories).id,
     })),
-});
+);
 
-console.log(`Created tickets: ${result.count}`);
+console.log(`Created tickets: ${count}`);
 
-await database.$disconnect();
+await db.close();

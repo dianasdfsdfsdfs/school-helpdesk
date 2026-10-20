@@ -1,10 +1,10 @@
 import { Elysia } from "elysia";
-import { prisma } from "./db";
+import { db } from "./db";
 
 async function findUserByToken(authorization?: string) {
   const token = authorization?.replace("Bearer ", "");
   if (!token) return null;
-  return prisma.user.findFirst({ where: { token } });
+  return db.orm.public.User.first({ token });
 }
 
 export const auth = new Elysia({ name: "auth" }).macro({
