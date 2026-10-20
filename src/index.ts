@@ -1,6 +1,7 @@
 import { Elysia, t } from "elysia";
 import { prisma } from "./db";
 import { auth } from "./auth";
+import { postgres } from "bun";
 
 const publicUser = { id: true, email: true, name: true, role: true };
 
@@ -189,7 +190,7 @@ const app = new Elysia()
   .delete(
     "/tickets/:id",
     async ({ params, status }) => {
-      const ticket = await prisma.ticket.findUnique({ where: { id: params.id } });
+      const ticket = await ({ where: { id: params.id } });
       if (!ticket) {
         return status(404, { message: "Ticket not found." });
       }
@@ -203,7 +204,8 @@ const app = new Elysia()
     }
   )
 
-  .listen(3000);
+  .listen(process.env.PORT ?? 3000);
+
 
 console.log(
   `🦊 Elysia is running at ${app.server?.hostname}:${app.server?.port}`
